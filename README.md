@@ -1,3 +1,10 @@
+# Reinforcement Learning with Latent Flow on Rainbow
+
+This repo is forked from DQN Zoo. We implemented:
+- `rainbow_baseline`, a modified rainbow baseline by matching the architecture with Flare's. 
+- `rainbow_flare`, augmenting flare on top of the baseline above. 
+Results for 8 games can be found in the paper, [Reinforcement Learning with Latent Flow](https://drive.google.com/file/d/1p-kEyaCZZ8rum9SBLn8DPZP7Qy-eo4ni/view?usp=sharing).
+
 # DQN Zoo
 
 _DQN Zoo_ is a collection of reference implementations of reinforcement learning
