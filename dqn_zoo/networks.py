@@ -197,6 +197,55 @@ def dqn_torso() -> NetworkFn:
 
   return net_fn
 
+def dqn_torso_baseline() -> NetworkFn:
+  """DQN convolutional torso.
+
+  Includes scaling from [`0`, `255`] (`uint8`) to [`0`, `1`] (`float32`)`.
+
+  Returns:
+    Network function that `haiku.transform` can be called on.
+  """
+
+  def net_fn(inputs):
+    """Function representing convolutional torso for a DQN Q-network."""
+    network = hk.Sequential([
+        lambda x: x.astype(jnp.float32) / 255.,
+        conv(16, kernel_shape=(8, 8), stride=(4, 4)),
+        jax.nn.relu,
+        conv(32, kernel_shape=(4, 4), stride=(2, 2)),
+        jax.nn.relu,
+        conv(32 * 6, kernel_shape=(3, 3), stride=(1, 1)),
+        jax.nn.relu,
+        hk.Flatten(),
+    ])
+    return network(inputs)
+
+  return net_fn
+
+def dqn_torso_delta() -> NetworkFn:
+  """DQN convolutional torso.
+
+  Includes scaling from [`0`, `255`] (`uint8`) to [`0`, `1`] (`float32`)`.
+
+  Returns:
+    Network function that `haiku.transform` can be called on.
+  """
+
+  def net_fn(inputs):
+    """Function representing convolutional torso for a DQN Q-network."""
+    network = hk.Sequential([
+        lambda x: x.astype(jnp.float32) / 255.,
+        conv(16, kernel_shape=(8, 8), stride=(4, 4)),
+        jax.nn.relu,
+        conv(32, kernel_shape=(4, 4), stride=(2, 2)),
+        jax.nn.relu,
+        conv(32, kernel_shape=(3, 3), stride=(1, 1)),
+        #jax.nn.relu,
+        hk.Flatten(),
+    ])
+    return network(inputs)
+
+  return net_fn
 
 def dqn_value_head(num_actions: int, shared_bias: bool = False) -> NetworkFn:
   """Regular DQN Q-value head with single hidden layer."""
@@ -255,6 +304,96 @@ def rainbow_atari_network(
 
   return net_fn
 
+def rainbow_flare_atari_network(
+    num_actions: int,
+    support: jnp.ndarray,
+    noisy_weight_init: float,
+) -> NetworkFn:
+  """Rainbow Flare network, expects `uint8` input."""
+
+  if support.ndim != 1:
+    raise ValueError('support should be 1D.')
+  num_atoms = len(support)
+  support = support[None, None, :]
+
+  def net_fn(inputs):
+    """Function representing Rainbow Q-network."""
+    inputs = jnp.transpose(inputs, [0, 3, 1, 2])
+    inputs = dqn_torso_delta()(inputs.reshape(-1, 84, 84, 1))
+    inputs = inputs.reshape(-1, 4, 1568)
+    current = inputs[:, 1:, :]
+    prev = jax.lax.stop_gradient(inputs[:, :-1, :])
+    inputs = jax.numpy.concatenate([current, current - prev], axis=1)
+    inputs = hk.Flatten()(inputs)
+    inputs = linear(256)(inputs)
+    inputs = layer_norm(inputs)
+
+    # Advantage head.
+    advantage = noisy_linear(512, noisy_weight_init, with_bias=True)(inputs)
+    advantage = jax.nn.relu(advantage)
+    advantage = noisy_linear(
+        num_actions * num_atoms, noisy_weight_init, with_bias=False)(
+            advantage)
+    advantage = jnp.reshape(advantage, (-1, num_actions, num_atoms))
+
+    # Value head.
+    value = noisy_linear(512, noisy_weight_init, with_bias=True)(inputs)
+    value = jax.nn.relu(value)
+    value = noisy_linear(num_atoms, noisy_weight_init, with_bias=False)(value)
+    value = jnp.reshape(value, (-1, 1, num_atoms))
+
+    # Q-distribution and values.
+    q_logits = value + advantage - jnp.mean(advantage, axis=-2, keepdims=True)
+    assert q_logits.shape[1:] == (num_actions, num_atoms)
+    q_dist = jax.nn.softmax(q_logits)
+    q_values = jnp.sum(q_dist * support, axis=2)
+    q_values = jax.lax.stop_gradient(q_values)
+    return C51NetworkOutputs(q_logits=q_logits, q_values=q_values)
+
+  return net_fn
+
+def rainbow_baseline_atari_network(
+    num_actions: int,
+    support: jnp.ndarray,
+    noisy_weight_init: float,
+) -> NetworkFn:
+  """Rainbow Baseline network, expects `uint8` input."""
+
+  if support.ndim != 1:
+    raise ValueError('support should be 1D.')
+  num_atoms = len(support)
+  support = support[None, None, :]
+
+  def net_fn(inputs):
+    """Function representing Rainbow Q-network."""
+    inputs = dqn_torso_baseline()(inputs)
+    inputs = hk.Flatten()(inputs)
+    inputs = linear(256)(inputs)
+    inputs = layer_norm(inputs)
+
+    # Advantage head.
+    advantage = noisy_linear(512, noisy_weight_init, with_bias=True)(inputs)
+    advantage = jax.nn.relu(advantage)
+    advantage = noisy_linear(
+        num_actions * num_atoms, noisy_weight_init, with_bias=False)(
+            advantage)
+    advantage = jnp.reshape(advantage, (-1, num_actions, num_atoms))
+
+    # Value head.
+    value = noisy_linear(512, noisy_weight_init, with_bias=True)(inputs)
+    value = jax.nn.relu(value)
+    value = noisy_linear(num_atoms, noisy_weight_init, with_bias=False)(value)
+    value = jnp.reshape(value, (-1, 1, num_atoms))
+
+    # Q-distribution and values.
+    q_logits = value + advantage - jnp.mean(advantage, axis=-2, keepdims=True)
+    assert q_logits.shape[1:] == (num_actions, num_atoms)
+    q_dist = jax.nn.softmax(q_logits)
+    q_values = jnp.sum(q_dist * support, axis=2)
+    q_values = jax.lax.stop_gradient(q_values)
+    return C51NetworkOutputs(q_logits=q_logits, q_values=q_values)
+
+  return net_fn
 
 def iqn_atari_network(num_actions: int, latent_dim: int) -> NetworkFn:
   """IQN network, expects `uint8` input."""
